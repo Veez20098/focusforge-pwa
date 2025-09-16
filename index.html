@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>FocusForge</title>
+
+  <!-- iOS PWA meta -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="FocusForge">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <!-- Web App Manifest -->
+  <link rel="manifest" href="manifest.webmanifest">
+
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 + ReactDOM (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel for single-file JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-neutral-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // Simple safe-area wrapper for iOS notches
+    const Safe = ({children}) => <div style={{paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)'}}>{children}</div>;
+
+    /* === FocusForge app (same features as before) === */
+    const Section = ({ title, right, children }) => (
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xl font-semibold">{title}</h2>
+          {right}
+        </div>
+        <div className="rounded-2xl border p-4 shadow-sm bg-white">{children}</div>
+      </div>
+    );
+    const Input = ({ className = "", ...props }) => (
+      <input className={"w-full rounded-xl border px-3 py-2 outline-none focus:ring-2 ring-offset-0 ring-blue-400 " + className} {...props} />
+    );
+    const Textarea = ({ className = "", ...props }) => (
+      <textarea className={"w-full rounded-xl border px-3 py-2 outline-none focus:ring-2 ring-blue-400 " + className} {...props} />
+    );
+    const Button = ({ children, className = "", ...props }) => (
+      <button className={"rounded-2xl px-4 py-2 shadow-sm border hover:shadow transition active:translate-y-[1px] " + className} {...props}>{children}</button>
+    );
+    const Toggle = ({ checked, onChange, label }) => (
+      <label className="flex items-center gap-3 cursor-pointer select-none">
+        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <span>{label}</span>
+      </label>
+    );
+    const LS = {
+      get: (k, fallback) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; } catch { return fallback; } },
+      set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
+    };
+    const emptyDay = (dateStr) => ({
+      date: dateStr, top3: ["", "", ""],
+      tasks: { Work: [], Thesis: [], Health: [], Personal: [] },
+      meals: [{ time: "08:30", title: "Breakfast", items: [] }, { time: "12:30", title: "Lunch", items: [] }, { time: "19:00", title: "Dinner", items: [] }],
+      exercise: { plan: "", done: false }, reflections: ""
+    });
+    const defaultTemplate = {
+      name: "Strict Weekday",
+      meta: { wake: "07:30", sleep: "23:30", gymDays: [1,3,5], pomodoro: 50, shortBreak: 10 },
+      top3Hints: ["Finish Deep Work block AM", "One key thesis task", "Gym or 45-min walk"],
+      blocks: [
+        { from: "08:30", to: "12:00", label: "Deep Work — Thesis / Job (no phone)", area: "Thesis" },
+        { from: "12:30", to: "15:00", label: "Admin / Meetings / Light Tasks", area: "Work" },
+        { from: "15:15", to: "17:30", label: "Focused Block — Switch (Thesis↔Job)", area: "Work" },
+      ],
+      mealPlan: [
+        { time: "08:30", title: "Breakfast", items: ["Eggs or oats + fruit", "Coffee/tea", "(Optional) whey isolate"] },
+        { time: "12:30", title: "Lunch", items: ["Chicken + rice + veggies", "or Omelette + bread"] },
+        { time: "19:00", title: "Dinner", items: ["Dal/sabzi or chicken curry + rice/roti", "Fruit/yogurt if needed"] },
+      ],
+      exercise: { text: "Gym 3–4×/wk. Wrist mobility + machines first (push/pull/legs). Cardio 15–20m." },
+      habits: [
+        { key: "no_social_before_8", label: "No Netflix/Instagram before 20:00" },
+        { key: "plan_tomorrow", label: "Plan tomorrow (3 MITs)" },
+        { key: "make_bed", label: "Make the bed" },
+        { key: "walk", label: "10-min daylight walk" },
+      ],
+    };
+    const todayStr = () => new Date().toISOString().slice(0,10);
+    const fmt = (d) => new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date(d));
+    function App(){
+      const [tab, setTab] = React.useState("today");
+      const [date, setDate] = React.useState(todayStr());
+      const [templates, setTemplates] = React.useState(LS.get("ff_templates", [defaultTemplate]));
+      const [settings, setSettings] = React.useState(LS.get("ff_settings", { defaultTemplateIndex: 0, weeklyTargets: { work: 20, thesis: 20, workouts: 3 }, reminders: { blockSocialBefore8: true } }));
+      const [habits, setHabits] = React.useState(LS.get("ff_habits", {}));
+      const [history, setHistory] = React.useState(LS.get("ff_history", {}));
+      const dayKey = `ff_day_${date}`;
+      const [day, setDay] = React.useState(() => LS.get(dayKey, null) || emptyFromTemplate(date));
+
+      function emptyFromTemplate(d){
+        const t = templates[settings.defaultTemplateIndex] || defaultTemplate;
+        const base = emptyDay(d);
+        base.top3 = t.top3Hints.map(()=> "");
+        base.meals = t.mealPlan.map((m)=>({...m}));
+        base.exercise.plan = t.exercise.text;
+        t.blocks.forEach((b)=>{
+          base.tasks[b.area] = base.tasks[b.area] || [];
+          base.tasks[b.area].push({ text: `${b.from}–${b.to} ${b.label}`, done: false });
+        });
+        return base;
+      }
+
+      React.useEffect(()=>{localStorage.setItem("ff_templates", JSON.stringify(templates));},[templates]);
+      React.useEffect(()=>{localStorage.setItem("ff_settings", JSON.stringify(settings));},[settings]);
+      React.useEffect(()=>{localStorage.setItem("ff_habits", JSON.stringify(habits));},[habits]);
+      React.useEffect(()=>{localStorage.setItem("ff_history", JSON.stringify(history));},[history]);
+      React.useEffect(()=>{localStorage.setItem(dayKey, JSON.stringify(day));},[dayKey, day]);
+      React.useEffect(()=>{
+        const existing = LS.get(`ff_day_${date}`, null);
+        setDay(existing || emptyFromTemplate(date));
+      }, [date]);
+
+      const progress = React.useMemo(()=>{
+        const areas = Object.keys(day.tasks);
+        const stats = {}; let total=0, done=0;
+        areas.forEach((a)=>{const arr=day.tasks[a]||[]; const d=arr.filter(t=>t.done).length; stats[a]={count:arr.length, done:d}; total+=arr.length; done+=d;});
+        return { perArea: stats, total, done, pct: total? Math.round(done/total*100): 0 };
+      }, [day.tasks]);
+
+      // Simple inline timer (no hooks to avoid earlier typo)
+      const [pSec, setPSec] = React.useState(0);
+      const [pRun, setPRun] = React.useState(false);
+      React.useEffect(()=>{ if(!pRun) return; const id=setInterval(()=> setPSec(s=> s>0? s-1:0), 1000); return ()=> clearInterval(id); }, [pRun]);
+      const pStart = (mins)=> { setPSec((settings?.meta?.pomodoro || 50) * 60 || (mins*60)); setPRun(true); };
+      const pPause = ()=> setPRun(false);
+      const pReset = ()=> { setPRun(false); setPSec(0); };
+      const mm = String(Math.floor(pSec/60)).padStart(2,"0");
+      const ss = String(pSec%60).padStart(2,"0");
+
+      const addTask = (area, text) => { if(!text?.trim()) return; setDay(d => ({...d, tasks: {...d.tasks, [area]: [...(d.tasks[area]||[]), {text, done:false}]}})); };
+      const toggleTask = (area, idx) => { setDay(d => { const arr=[...d.tasks[area]]; arr[idx]={...arr[idx], done: !arr[idx].done}; return {...d, tasks:{...d.tasks, [area]: arr}}; }); };
+      const removeTask = (area, idx) => { setDay(d => { const arr = d.tasks[area].filter((_,i)=> i!==idx); return {...d, tasks:{...d.tasks, [area]: arr}}; }); };
+
+      const saveTodayToHistory = ()=> setHistory(h => ({...h, [date]: day}));
+      const exportAll = ()=>{
+        const payload = { templates, settings, habits, history: {...history, [date]: day} };
+        const blob = new Blob([JSON.stringify(payload,null,2)], {type: "application/json"});
+        const url = URL.createObjectURL(blob); const a = document.createElement("a");
+        a.href = url; a.download = `focusforge_backup_${date}.json`; a.click(); URL.revokeObjectURL(url);
+      };
+      const importAll = (file)=>{
+        const reader = new FileReader();
+        reader.onload = ()=> { try {
+            const data = JSON.parse(reader.result);
+            if(data.templates) setTemplates(data.templates);
+            if(data.settings) setSettings(data.settings);
+            if(data.habits) setHabits(data.habits);
+            if(data.history) setHistory(data.history);
+            const cur = data.history?.[date]; if(cur) setDay(cur);
+          } catch(e){ alert("Invalid file"); } };
+        reader.readAsText(file);
+      };
+      const toggleHabitForToday = (key)=>{
+        const markKey = `${key}::${date}`;
+        setHabits(h => ({...h, [markKey]: !h[markKey]}));
+      };
+
+      const activeTemplate = templates[settings.defaultTemplateIndex] || defaultTemplate;
+
+      const AddTask = ({ onAdd }) => {
+        const [val, setVal] = React.useState("");
+        return (
+          <div className="flex items-center gap-2">
+            <Input value={val} onChange={(e) => setVal(e.target.value)} placeholder="Add task" className="w-56" />
+            <Button onClick={() => { onAdd(val); setVal(""); }}>Add</Button>
+          </div>
+        );
+      };
+      const EditableList = ({ items, onChange, placeholder }) => {
+        const [val, setVal] = React.useState("");
+        const remove = (idx) => onChange(items.filter((_, i) => i !== idx));
+        return (
+          <div>
+            <ul className="space-y-2">
+              {items.map((it, idx) => (
+                <li key={idx} className="flex items-center gap-2 bg-neutral-50 border rounded-xl px-3 py-2">
+                  <span className="flex-1">{it}</span>
+                  <button onClick={() => remove(idx)} className="text-neutral-400 hover:text-red-500">×</button>
+                </li>
+              ))}
+            </ul>
+            <div className="flex items-center gap-2 mt-2">
+              <Input value={val} onChange={(e) => setVal(e.target.value)} placeholder={placeholder || "Add item"} />
+              <Button onClick={() => { if (val.trim()) { onChange([...items, val.trim()]); setVal(""); } }}>Add</Button>
+            </div>
+          </div>
+        );
+      };
+      const BlocksEditor = ({ blocks, onChange }) => {
+        const add = () => onChange([...(blocks||[]), { from:"08:30", to:"10:30", label:"New block", area:"Work" }]);
+        const rm = (i) => onChange(blocks.filter((_,idx)=> idx!==i));
+        const upd = (i, patch) => onChange(blocks.map((b,idx)=> idx===i? {...b,...patch} : b));
+        return (
+          <div className="space-y-3">
+            {(blocks||[]).map((b,i)=>(
+              <div key={i} className="grid grid-cols-12 gap-2 items-center bg-white border rounded-xl p-3">
+                <Input className="col-span-2" value={b.from} onChange={(e)=> upd(i,{from:e.target.value})} />
+                <Input className="col-span-2" value={b.to} onChange={(e)=> upd(i,{to:e.target.value})} />
+                <select className="col-span-2 rounded-xl border px-3 py-2" value={b.area} onChange={(e)=> upd(i,{area:e.target.value})}>
+                  {['Work','Thesis','Health','Personal'].map((a)=> <option key={a} value={a}>{a}</option>)}
+                </select>
+                <Input className="col-span-5" value={b.label} onChange={(e)=> upd(i,{label:e.target.value})} />
+                <button className="col-span-1 text-neutral-400 hover:text-red-500" onClick={()=> rm(i)}>×</button>
+              </div>
+            ))}
+            <Button onClick={add}>Add block</Button>
+          </div>
+        );
+      };
+      const MealsEditor = ({ meals, onChange }) => {
+        const add = () => onChange([...(meals||[]), { time:"16:00", title:"Snack", items:[] }]);
+        const rm = (i) => onChange(meals.filter((_,idx)=> idx!==i));
+        const upd = (i, patch) => onChange(meals.map((m,idx)=> idx===i? {...m,...patch}: m));
+        return (
+          <div className="space-y-3">
+            {(meals||[]).map((m,i)=>(
+              <div key={i} className="bg-white border rounded-xl p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <Input className="w-24" value={m.time} onChange={(e)=> upd(i,{time:e.target.value})} />
+                  <Input className="w-40" value={m.title} onChange={(e)=> upd(i,{title:e.target.value})} />
+                  <button className="ml-auto text-neutral-400 hover:text-red-500" onClick={()=> rm(i)}>×</button>
+                </div>
+                <EditableList items={m.items||[]} onChange={(items)=> upd(i,{items})} placeholder="Add default meal item" />
+              </div>
+            ))}
+            <Button onClick={add}>Add meal</Button>
+          </div>
+        );
+      };
+      const TemplatesTab = ({ templates, setTemplates, settings, setSettings }) => {
+        const [idx, setIdx] = React.useState(settings.defaultTemplateIndex || 0);
+        const tpl = templates[idx] || defaultTemplate;
+        const addTemplate = ()=>{ setTemplates(t => [...t, {...defaultTemplate, name: `New Template ${t.length+1}`}]); setIdx(templates.length); };
+        const updateField = (path, val) => {
+          setTemplates(arr => { const copy=[...arr]; const t={...copy[idx]}; t[path]=val; copy[idx]=t; return copy; });
+        };
+        return (
+          <div>
+            <Section title="Manage Templates" right={
+              <div className="flex items-center gap-2">
+                <Button onClick={addTemplate}>Add Template</Button>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-neutral-500">Default:</span>
+                  <select className="rounded-xl border px-3 py-2" value={settings.defaultTemplateIndex}
+                    onChange={(e)=>{ const i=Number(e.target.value); setSettings({...settings, defaultTemplateIndex: i}); setIdx(i); }}>
+                    {templates.map((t,i)=><option key={i} value={i}>{t.name}</option>)}
+                  </select>
+                </div>
+              </div>
+            }>
+              <div className="grid md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Template name</label>
+                  <Input value={tpl.name} onChange={(e)=> updateField("name", e.target.value)} />
+                  <div className="grid grid-cols-2 gap-3 mt-4">
+                    <div><label className="block text-sm font-medium mb-1">Wake</label><Input value={tpl.meta?.wake||"07:30"} onChange={(e)=> updateField("meta", {...tpl.meta, wake:e.target.value})} /></div>
+                    <div><label className="block text-sm font-medium mb-1">Sleep</label><Input value={tpl.meta?.sleep||"23:30"} onChange={(e)=> updateField("meta", {...tpl.meta, sleep:e.target.value})} /></div>
+                    <div><label className="block text-sm font-medium mb-1">Pomodoro (min)</label><Input type="number" value={tpl.meta?.pomodoro||50} onChange={(e)=> updateField("meta", {...tpl.meta, pomodoro:Number(e.target.value)})} /></div>
+                    <div><label className="block text-sm font-medium mb-1">Break (min)</label><Input type="number" value={tpl.meta?.shortBreak||10} onChange={(e)=> updateField("meta", {...tpl.meta, shortBreak:Number(e.target.value)})} /></div>
+                  </div>
+                  <div className="mt-4"><label className="block text-sm font-medium mb-1">Top 3 hints (placeholders)</label>
+                    <EditableList items={tpl.top3Hints} onChange={(items)=> updateField("top3Hints", items)} />
+                  </div>
+                  <div className="mt-4"><label className="block text-sm font-medium mb-1">Habits</label>
+                    <EditableList items={tpl.habits.map(h=>h.label)} onChange={(labels)=> updateField("habits", labels.map((l,i)=>({ key: tpl.habits[i]?.key || `habit_${i}`, label: l })))} />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Work/Study blocks (seed tasks)</label>
+                  <BlocksEditor blocks={tpl.blocks} onChange={(blocks)=> updateField("blocks", blocks)} />
+                  <div className="mt-4"><label className="block text-sm font-medium mb-1">Meal plan</label>
+                    <MealsEditor meals={tpl.mealPlan} onChange={(meals)=> updateField("mealPlan", meals)} />
+                  </div>
+                  <div className="mt-4"><label className="block text-sm font-medium mb-1">Exercise plan text</label>
+                    <Textarea value={tpl.exercise?.text||""} onChange={(e)=> updateField("exercise", { text: e.target.value })} />
+                  </div>
+                </div>
+              </div>
+            </Section>
+          </div>
+        );
+      };
+      const HabitsTab = ({ template, habits, date, toggle }) => {
+        const items = template.habits || [];
+        return (
+          <Section title={`Daily habits for ${date}`}>
+            <div className="grid md:grid-cols-2 gap-3">
+              {items.map((h)=>{
+                const key = `${h.key}::${date}`; const checked = !!habits[key];
+                return (
+                  <label key={h.key} className="flex items-center gap-3 bg-white border rounded-xl p-3 cursor-pointer">
+                    <input type="checkbox" checked={checked} onChange={()=> toggle(h.key)} />
+                    <div><div className="font-medium">{h.label}</div><div className="text-xs text-neutral-500">Tap to mark done for today</div></div>
+                  </label>
+                );
+              })}
+            </div>
+          </Section>
+        );
+      };
+      const SettingsTab = ({ settings, setSettings }) => {
+        const [w, setW] = React.useState(settings.weeklyTargets || { work: 20, thesis: 20, workouts: 3 });
+        return (
+          <div>
+            <Section title="Weekly targets">
+              <div className="grid md:grid-cols-3 gap-3">
+                <div><label className="block text-sm font-medium mb-1">Work (hrs)</label><Input type="number" value={w.work} onChange={(e)=> setW({...w, work:Number(e.target.value)})} /></div>
+                <div><label className="block text-sm font-medium mb-1">Thesis (hrs)</label><Input type="number" value={w.thesis} onChange={(e)=> setW({...w, thesis:Number(e.target.value)})} /></div>
+                <div><label className="block text-sm font-medium mb-1">Workouts (per week)</label><Input type="number" value={w.workouts} onChange={(e)=> setW({...w, workouts:Number(e.target.value)})} /></div>
+              </div>
+              <Button className="mt-3" onClick={()=> setSettings({...settings, weeklyTargets: w})}>Save targets</Button>
+            </Section>
+            <Section title="Reminders">
+              <Toggle checked={!!settings.reminders?.blockSocialBefore8} onChange={(v)=> setSettings({...settings, reminders:{...settings.reminders, blockSocialBefore8: v}})} label="Soft reminder: Avoid social media/Netflix before 20:00" />
+              <p className="text-sm text-neutral-500 mt-2">(Use Screen Time/Focus on iPhone to enforce.)</p>
+            </Section>
+          </div>
+        );
+      };
+      const HistoryTab = ({ history, setDate }) => {
+        const entries = Object.values(history).sort((a,b)=> a.date < b.date ? 1 : -1);
+        return (
+          <Section title="Saved days">
+            {entries.length===0? <div className="text-neutral-500">No saved days yet.</div> :
+              <div className="grid md:grid-cols-2 gap-3">
+                {entries.map((d)=>(
+                  <button key={d.date} onClick={()=> setDate(d.date)} className="text-left bg-white border rounded-xl p-3 hover:shadow">
+                    <div className="font-medium">{fmt(d.date)}</div>
+                    <div className="text-sm text-neutral-500">Top 3: {d.top3.filter(Boolean).slice(0,3).join(" · ") || "—"}</div>
+                  </button>
+                ))}
+              </div>}
+          </Section>
+        );
+      };
+
+      return (
+        <Safe>
+          <div className="min-h-screen bg-neutral-50 text-neutral-900">
+            <div className="max-w-2xl mx-auto px-4 py-4"> {/* narrower for phone */}
+              <header className="flex items-center justify-between mb-4">
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight">FocusForge</h1>
+                  <p className="text-neutral-500 text-sm">Your day: work, thesis, food, fitness.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input type="date" value={date} onChange={(e)=> setDate(e.target.value)} className="w-auto" />
+                  <Button onClick={saveTodayToHistory}>Save</Button>
+                </div>
+              </header>
+
+              <nav className="flex gap-2 mb-4 overflow-x-auto">
+                {[["today","Today"],["templates","Templates"],["habits","Habits"],["settings","Settings"],["history","History"]].map(([k,label])=> (
+                  <Button key={k} className={"" + (tab===k? "bg-neutral-900 text-white": "bg-white")} onClick={()=> setTab(k)}>{label}</Button>
+                ))}
+              </nav>
+
+              {tab === "today" && (
+                <div>
+                  <div className="mb-3 text-xs text-neutral-600">{fmt(date)} · Template: <span className="font-medium">{(templates[settings.defaultTemplateIndex]||{}).name||"—"}</span></div>
+
+                  <Section title="Top 3 for Today">
+                    <div className="grid gap-2">
+                      {day.top3.map((v,i)=>(
+                        <Input key={i} placeholder={["Deep work outcome","Thesis milestone","Training/Walk target"][i]} value={v}
+                          onChange={(e)=>{ const val=e.target.value; setDay(d=>{ const arr=[...d.top3]; arr[i]=val; return {...d, top3: arr}; }); }} />
+                      ))}
+                    </div>
+                  </Section>
+
+                  <Section title={`Tasks · ${progress.done}/${progress.total} (${progress.pct}%)`} right={
+                    <div className="text-xs text-neutral-500 flex items-center gap-2">
+                      <span>{mm}:{ss}</span>
+                      <Button onClick={()=> { setPSec(((templates[settings.defaultTemplateIndex]?.meta?.pomodoro)||50)*60); setPRun(true); }}>Start</Button>
+                      <Button onClick={()=> setPRun(false)}>Pause</Button>
+                      <Button onClick={pReset}>Reset</Button>
+                    </div>
+                  }>
+                    <div className="grid gap-4">
+                      {Object.keys(day.tasks).map((area)=>(
+                        <div key={area}>
+                          <div className="flex items-center justify-between mb-2">
+                            <h3 className="font-medium">{area} ({progress.perArea[area]?.done||0}/{progress.perArea[area]?.count||0})</h3>
+                            <AddTask onAdd={(txt)=> addTask(area, txt)} />
+                          </div>
+                          <ul className="space-y-2">
+                            {(day.tasks[area]||[]).map((t,idx)=>(
+                              <li key={idx} className="flex items-center gap-3 bg-white border rounded-xl px-3 py-2">
+                                <input type="checkbox" checked={!!t.done} onChange={()=> toggleTask(area, idx)} />
+                                <span className={t.done? "line-through text-neutral-400": ""}>{t.text}</span>
+                                <button onClick={()=> removeTask(area, idx)} className="ml-auto text-neutral-400 hover:text-red-500">×</button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </Section>
+
+                  <Section title="Meals">
+                    <div className="space-y-3">
+                      {day.meals.map((m,i)=>(
+                        <div key={i} className="bg-white rounded-xl border p-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Input className="w-24" value={m.time} onChange={(e)=>{ const val=e.target.value; setDay(d=>{ const meals=[...d.meals]; meals[i]={...meals[i], time: val}; return {...d, meals}; }); }} />
+                            <Input className="w-40" value={m.title} onChange={(e)=>{ const val=e.target.value; setDay(d=>{ const meals=[...d.meals]; meals[i]={...meals[i], title: val}; return {...d, meals}; }); }} />
+                          </div>
+                          <EditableList items={m.items} onChange={(items)=> setDay(d=>{ const meals=[...d.meals]; meals[i]={...meals[i], items}; return {...d, meals}; })} placeholder="Add food item (e.g., 'Chicken 150g + rice 120g + veg')" />
+                        </div>
+                      ))}
+                    </div>
+                  </Section>
+
+                  <Section title="Exercise">
+                    <div className="flex items-center gap-2">
+                      <Textarea value={day.exercise.plan} onChange={(e)=> setDay(d=> ({...d, exercise: {...d.exercise, plan: e.target.value }}))} />
+                    </div>
+                    <div className="mt-2"><label className="flex items-center gap-2"><input type="checkbox" checked={day.exercise.done} onChange={(e)=> setDay(d=> ({...d, exercise: {...d.exercise, done: e.target.checked }}))} /> Workout completed</label></div>
+                    <p className="mt-2 text-xs text-neutral-500">Tip: Wrist mobility + machines; keep RPE 6–7 for 2 weeks.</p>
+                  </Section>
+
+                  <Section title="Evening reflection">
+                    <Textarea placeholder="What went well? What to improve tomorrow?" value={day.reflections} onChange={(e)=> setDay(d=> ({...d, reflections: e.target.value }))} />
+                  </Section>
+                </div>
+              )}
+
+              {tab === "templates" && <TemplatesTab templates={templates} setTemplates={setTemplates} settings={settings} setSettings={setSettings} />}
+              {tab === "habits" && <HabitsTab template={activeTemplate} habits={habits} date={date} toggle={toggleHabitForToday} />}
+              {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettings} />}
+              {tab === "history" && <HistoryTab history={{...history, [date]: day}} setDate={setDate} />}
+            </div>
+          </div>
+        </Safe>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+    // Register service worker for offline cache
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./service-worker.js").catch((e) => console.log("SW registration failed", e));
+      });
+    }
+  </script>
+</body>
+</html>
